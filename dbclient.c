@@ -12,6 +12,7 @@
 #include "helpers/wrapsock.h"
 #include <stdbool.h>
 #include <errno.h> // Include errno.h for the ENOENT error code
+#include <signal.h>
 
 /* Wrapper signatures */
 ssize_t Readn(int fd, void *ptr, size_t nbytes);
@@ -19,16 +20,19 @@ void Writen(int fd, void *ptr, size_t nbytes);
 
 int currentFileCount = 0;
 char *currentFileNames[MAXFILES]; // Array to store file names
+DIR *dir;
+int soc;
 
 /* Function signatures */
 int setup(char *hostname, char *directory, char *user);
 int server_connect(char *hostname);
-void sync_files(char *directory, int soc);
-void retrieve_new_files(int soc, char *directory);
-void send_file(int soc, char *directory, char *file);
+void sync_files(char *directory);
+void retrieve_new_files(char *directory);
+void send_file(char *directory, char *file);
 void get_file(int sock, char *directory, char *file, int size, long int timestamp);
 void updateStoredFileNames(char *fileNames[], int *fileCount, const char *directory);
 bool fileExists(const char *fileName, const char *dirPath);
+void handle_signal(int sg);
 
 /* Connect to a server given by a hostname '-h' with username 'u' and directory
  * '-d'. Synchronize files both ways with the server. Retrieve any new files on the
@@ -41,6 +45,10 @@ int main(int argc, char **argv)
 {
 	char ch;
 	char *host = NULL, *dir = NULL, *user = NULL;
+
+	// Register signal handlers
+	signal(SIGINT, handle_signal);
+	signal(SIGTERM, handle_signal);
 
 	while ((ch = getopt(argc, argv, "h:d:u:")) != -1)
 	{
@@ -68,9 +76,9 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 	// Connect to a server and log in.
-	int soc = setup(host, dir, user);
+	soc = setup(host, dir, user);
 	// Synchronize files once logged in.
-	sync_files(dir, soc);
+	sync_files(dir);
 
 	return 0;
 }
@@ -79,7 +87,7 @@ void updateStoredFileNames(char *fileNames[], int *fileCount, const char *direct
 {
 	*fileCount = 0;
 
-	DIR *dir = opendir(directory);
+	dir = opendir(directory);
 	if (dir == NULL)
 	{
 		perror("Error opening directory");
@@ -102,7 +110,6 @@ void updateStoredFileNames(char *fileNames[], int *fileCount, const char *direct
 
 bool fileExists(const char *fileName, const char *dirPath)
 {
-	DIR *dir;
 	struct dirent *entry;
 
 	dir = opendir(dirPath);
@@ -134,7 +141,7 @@ bool fileExists(const char *fileName, const char *dirPath)
  * @Param: soc the socket at which the server is connected.
  * @Return: void.
  */
-void sync_files(char *directory, int soc)
+void sync_files(char *directory)
 {
 	struct dirent *file;
 	struct stat st;
@@ -146,7 +153,7 @@ void sync_files(char *directory, int soc)
 	struct dirent *entry;
 
 	// Open the directory
-	DIR *dir = opendir(directory);
+	dir = opendir(directory);
 
 	if (!dir && errno == ENOENT)
 	{
@@ -294,7 +301,6 @@ void sync_files(char *directory, int soc)
 					// Add new file to current file array
 					if (!file_exists_write)
 					{
-						printf("Eklenecek file değerinin yerinde %s var \n", currentFileNames[currentFileCount]);
 						currentFileNames[currentFileCount] = malloc(strlen(file->d_name) + 1);
 						strcpy(currentFileNames[currentFileCount], file->d_name);
 						printf("Added file isss %s\n", currentFileNames[currentFileCount]);
@@ -358,7 +364,7 @@ void sync_files(char *directory, int soc)
 					else if (server_sync_packet.mtime < sync_packet.mtime)
 					{ // Client has a newer version.
 						printf("TX: Sending file: %s\n", file->d_name);
-						send_file(soc, directory, sync_packet.filename);
+						send_file(directory, sync_packet.filename);
 						printf("\tTX: Complete.\n");
 					}
 					else if (server_sync_packet.mtime > sync_packet.mtime)
@@ -384,7 +390,7 @@ void sync_files(char *directory, int soc)
 		 * check if the server has any new files, which this client does not and retrieve
 		 * them if so.
 		 */
-		retrieve_new_files(soc, directory);
+		retrieve_new_files(directory);
 
 		printf("INFO: Sleeping\n");
 		// Sleep for WAITTIME.
@@ -409,7 +415,7 @@ void sync_files(char *directory, int soc)
  * @Param: directory the directory where the file has to be retrieved to.
  * @Return: void.
  */
-void retrieve_new_files(int soc, char *directory)
+void retrieve_new_files(char *directory)
 {
 
 	struct sync_message empty_packet;
@@ -460,7 +466,7 @@ void retrieve_new_files(int soc, char *directory)
  * @Param: file the file to send.
  * @Return: void.
  */
-void send_file(int soc, char *directory, char *file)
+void send_file(char *directory, char *file)
 {
 	FILE *fp;
 	char fullpath[CHUNKSIZE];
@@ -605,7 +611,7 @@ void get_file(int sock, char *directory, char *file, int size, long int timestam
 int server_connect(char *hostname)
 {
 
-	int soc;
+	// int soc;
 	struct hostent *hp;
 	struct sockaddr_in host;
 
@@ -647,7 +653,7 @@ int server_connect(char *hostname)
 int setup(char *hostname, char *directory, char *user)
 {
 
-	int soc;
+	// int soc;
 	struct login_message handshake;
 	// Establish a connection to the server.
 	soc = server_connect(hostname);
@@ -660,4 +666,21 @@ int setup(char *hostname, char *directory, char *user)
 
 	// Return the socket at which the server is connected.
 	return soc;
+}
+
+void handle_signal(int sg)
+{
+	if (sg == SIGINT)
+	{
+		printf("Close Signal is come. Exit.\n");
+	}
+	else if (sg == SIGTERM)
+	{
+		printf("Close Signal is come. Exit.\n");
+	}
+
+	closedir(dir);
+	Close(soc);
+
+	exit(0);
 }

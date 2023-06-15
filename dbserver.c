@@ -12,6 +12,7 @@
 #include "helpers/wrapsock.h"
 #include "helpers/filedata.h"
 #include <pthread.h>
+#include <arpa/inet.h>
 
 /* Wrapper signatures */
 
@@ -201,6 +202,7 @@ void *startConsThread(void *arg)
 
 			if ((n = Readn(sockfd, &buffer, get_read_size)) <= 0)
 			{
+				// printf("Buraya geldi3\n");
 				// Client closed connection.
 				close_connection(sockfd, &clients[client_slot], &readfds);
 
@@ -208,6 +210,7 @@ void *startConsThread(void *arg)
 			}
 			else
 			{
+				// printf("Buraya geldi4\n");
 				// Write the file out on the server's file system.
 				get_file(sockfd, &clients[client_slot], buffer, n);
 			}
@@ -297,101 +300,6 @@ int main(int argc, char **argv)
 			if (--nready <= 0)
 				continue; /* no more readable descriptors */
 		}
-
-		// for (m = 0; i < THREADSIZE; i++)
-		// {
-		// 	if (pthread_create(&th_cons[i], NULL, &startConsThread, NULL) != 0)
-		// 	{
-		// 		perror("Failed to create the consumer thread");
-		// 	}
-		// }
-		// for (i = 0; i <= maxi; i++)
-		// {
-		// 	maxi--;
-		// 	// Create a thread arguments structure
-		// 	struct client_info *args_ptr = malloc(sizeof(struct client_info));
-		// 	memcpy(args_ptr, &clients[client_slot], sizeof(struct client_info));
-
-		// 	// Create a new thread to handle the client connection
-		// 	printf("Thread oluşturdu\n");
-		// 	if (pthread_create(&tid, NULL, startConsThread, args_ptr) != 0)
-		// 	{
-		// 		perror("Failed to create thread");
-		// 		close(connfd);
-		// 		clients[client_slot].sock = -1;
-		// 		continue;
-		// 	}
-		// }
-
-		// // Check the clients for data.
-		// for (i = 0; i <= maxi; i++)
-		// {
-
-		// 	if ((sockfd = clients[i].sock) < 0) // Not active.
-		// 		continue;
-		// 	if (FD_ISSET(sockfd, &rset))
-		// 	{
-		// 		printf("Buraya geldi1\n");
-		// 		// Client 'clients[i]' has some data.
-		// 		if (clients[i].state == SYNC)
-		// 		{
-		// 			printf("Buraya geldi2\n");
-
-		// 			if (clients[i].refresh)
-		// 			{
-		// 				printf("Buraya geldi3\n");
-		// 				/* First reqeust after a complete cycle (see README).
-		// 				 * Refresh times from the server's filesystem, if modified.
-		// 				 */
-		// 				refresh_file_times(&clients[i]);
-
-		// 				// Once refreshed, do not do so until a cycle is complete.
-		// 				clients[i].refresh = 0;
-		// 			}
-		// 			printf("Socket fd = %d\n", sockfd);
-		// 			if ((n = Readn(sockfd, &received_packet, received_packet_size)) <= 0)
-		// 			{
-		// 				printf("Buraya geldi4\n");
-		// 				// Client closed connection.
-		// 				close_connection(sockfd, &clients[i], &allset);
-		// 			}
-		// 			else
-		// 			{
-		// 				printf("Buraya geldi5\n");
-		// 				// A sync packet has been received, process it.
-		// 				process_client_request(sockfd, &clients[i], received_packet, &allset);
-		// 			}
-		// 		}
-		// 		else if (clients[i].state == GETFILE)
-		// 		{
-		// 			printf("Buraya geldi6\n");
-
-		// 			// This client has an ongoing GETFILE transaction.
-
-		// 			/* red_read_size determines how many bytes to read from the socket, read at most
-		// 			 * CHUNKSIZE bytes.
-		// 			 */
-		// 			if ((get_read_size = clients[i].get_filename_size - clients[i].get_filename_readcount) > CHUNKSIZE)
-		// 			{
-		// 				get_read_size = CHUNKSIZE;
-		// 			}
-
-		// 			if ((n = Readn(sockfd, &buffer, get_read_size)) <= 0)
-		// 			{
-		// 				// Client closed connection.
-		// 				close_connection(sockfd, &clients[i], &allset);
-		// 			}
-		// 			else
-		// 			{
-		// 				// Write the file out on the server's file system.
-		// 				get_file(sockfd, &clients[i], buffer, n);
-		// 			}
-		// 		}
-		// 	}
-
-		// 	if (--nready <= 0)
-		// 		break; /* no more readable descriptors */
-		// }
 	}
 }
 
@@ -453,7 +361,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 		{
 			struct dirent *entry;
 
-			// First check any deleted file
+			// Dosya currentlerde var ama dir içinde yok yani server klasöründen silinmiş
 			for (i = 0; i < currentFileCount; i++)
 			{
 				if ((dir = opendir(dirpath)) == NULL)
@@ -475,7 +383,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 
 				if (!file_exists)
 				{
-					printf("Deleted File isssss %s\n", currentFileNames[i]);
+					printf("Deleted File isssss1 %s\n", currentFileNames[i]);
 					break;
 				}
 				closedir(dir);
@@ -504,17 +412,26 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 				 * they will be found out and successively sent at the next empty sync_messages the client
 				 * sends.
 				 */
-				printf("\tDELETEDFILE TX: %s does not exist on client %s; sending. \n", currentFileNames[i], client->userid);
+				printf("\tDELETEDFILE TX: %s deleted from server folder sending to client %s; sending. \n", currentFileNames[i], client->userid);
+
+				printf("current file count = %d", currentFileCount);
+				free(currentFileNames[i]);
+				currentFileNames[i] = NULL;
+
+				// Update the current array with deletion in the array
+				if (i < currentFileCount)
+				{
+					free(currentFileNames[i]); // Free memory for the last element (moved to the previous index)
+					for (int j = i; j < currentFileCount - 1; j++)
+					{
+						currentFileNames[j] = currentFileNames[j + 1];
+					}
+					currentFileCount--;
+				}
+
 				printf("\t\tDELETEDFILE TX: Complete.\n");
 
 				// Update the current array with delete in array
-				free(currentFileNames[i]);
-				currentFileNames[i] = NULL;
-				for (int j = i; j < currentFileCount - 1; j++)
-				{
-					currentFileNames[j] = currentFileNames[j + 1];
-				}
-				currentFileCount--;
 			}
 			else
 			{
@@ -786,7 +703,6 @@ int delete_file(int sock, struct client_info *client)
 
 	while (((file = readdir(dir)) != NULL))
 	{
-		int file_exists = 0;
 		/* This flag determines if the current file in this loop is new and
 		 * has to be sent to the client.
 		 */
@@ -805,20 +721,6 @@ int delete_file(int sock, struct client_info *client)
 		// Check if a regular file (Skip dot files and subdirectories).
 		if (S_ISREG(st.st_mode))
 		{
-
-			for (int k = 0; k < MAXFILES; k++)
-			{
-				if (strcmp(client->files[k].filename, file->d_name) == 0)
-				{
-					file_exists = 1;
-				}
-
-				if (!file_exists)
-				{
-					printf("Deleted File isssss %s\n", file->d_name);
-					break;
-				}
-			}
 			for (j = 0; j < MAXFILES; j++)
 			{
 
@@ -839,42 +741,6 @@ int delete_file(int sock, struct client_info *client)
 				}
 			}
 
-			if (!file_exists)
-			{
-				// Generate and send the approriate sync_message with the file information.
-				strncpy(response_packet.filename, file->d_name, MAXNAME);
-				response_packet.mtime = -1;
-				response_packet.size = -1;
-
-				Writen(sock, &response_packet, packet_size);
-
-				/* Send the file to the client. Once the file is sent the functions returns an arbitary
-				 * value; since at most only one new file can be transferred. If there were more new files
-				 * they will be found out and successively sent at the next empty sync_messages the client
-				 * sends.
-				 */
-				printf("\tDELETEDFILE TX: %s does not exist on client %s; sending. \n", file->d_name, client->userid);
-				printf("\t\tDELETEDFILE TX: Complete.\n");
-
-				int m;
-				for (m = 0; m < currentFileCount; m++)
-				{
-					if (strcmp(file->d_name, currentFileNames[m]) == 0)
-					{
-						free(currentFileNames[m]);
-						currentFileNames[m] = NULL;
-						break;
-					}
-				}
-
-				// Update the current array with delete in array
-
-				for (int s = m; j < currentFileCount - 1; s++)
-				{
-					currentFileNames[s] = currentFileNames[s + 1];
-				}
-				currentFileCount--;
-			}
 			if (found)
 			{
 				currentFileNames[currentFileCount] = malloc(strlen(file->d_name) + 1);
@@ -907,6 +773,73 @@ int delete_file(int sock, struct client_info *client)
 			}
 		}
 	}
+
+	// int file_exists = 0;
+
+	// for (int i = 0; i < currentFileCount; i++)
+	// {
+	// 	if ((dir = opendir(dirpath)) == NULL)
+	// 	{
+	// 		perror("Opening directory: ");
+	// 		exit(1);
+	// 	}
+
+	// 	file_exists = 0;
+
+	// 	while ((file = readdir(dir)) != NULL)
+	// 	{
+	// 		if (strcmp(file->d_name, currentFileNames[i]) == 0)
+	// 		{
+	// 			file_exists = 1;
+	// 			break;
+	// 		}
+	// 	}
+
+	// 	if (!file_exists)
+	// 	{
+	// 		printf("Deleted File isssss %s\n", currentFileNames[i]);
+	// 		break;
+	// 	}
+	// }
+
+	// closedir(dir);
+
+	// if (!file_exists)
+	// {
+	// 	// Generate and send the approriate sync_message with the file information.
+	// 	strncpy(response_packet.filename, file->d_name, MAXNAME);
+	// 	response_packet.mtime = -1;
+	// 	response_packet.size = -1;
+
+	// 	Writen(sock, &response_packet, packet_size);
+
+	// 	/* Send the file to the client. Once the file is sent the functions returns an arbitary
+	// 	 * value; since at most only one new file can be transferred. If there were more new files
+	// 	 * they will be found out and successively sent at the next empty sync_messages the client
+	// 	 * sends.
+	// 	 */
+	// 	printf("\tDELETEDFILE TX: %s does not exist on client %s; sending. \n", file->d_name, client->userid);
+	// 	printf("\t\tDELETEDFILE TX: Complete.\n");
+
+	// 	int m;
+	// 	for (m = 0; m < currentFileCount; m++)
+	// 	{
+	// 		if (strcmp(file->d_name, currentFileNames[m]) == 0)
+	// 		{
+	// 			free(currentFileNames[m]);
+	// 			currentFileNames[m] = NULL;
+	// 			break;
+	// 		}
+	// 	}
+
+	// 	// Update the current array with delete in array
+
+	// 	for (int s = m; j < currentFileCount - 1; s++)
+	// 	{
+	// 		currentFileNames[s] = currentFileNames[s + 1];
+	// 	}
+	// 	currentFileCount--;
+	// }
 
 	/* If this scope is reached by the function, it indicates that there are no
 	 * more new files left to be sent (since any new file would have 'returned').
@@ -1111,7 +1044,6 @@ void refresh_file_times(struct client_info *client)
 						client->files[j].mtime = st.st_mtime;
 						client->files[j].size = (int)st.st_size;
 					}
-
 					break;
 				}
 			}
@@ -1199,6 +1131,11 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 		client->state = SYNC;
 	}
 
+	currentFileNames[currentFileCount] = malloc(strlen(client->get_filename) + 1);
+	strcpy(currentFileNames[currentFileCount], client->get_filename);
+	printf("Added file isss6 %s\n", client->get_filename);
+	currentFileCount++;
+
 	if ((fclose(fp)))
 	{
 		perror("fclose: ");
@@ -1269,6 +1206,11 @@ void send_file(int sock, char *directory, char *filename)
 		// Write the 'i' bytes read from the file to the socket 'soc'.
 		Writen(sock, &buffer, i);
 	}
+
+	currentFileNames[currentFileCount] = malloc(strlen(filename) + 1);
+	strcpy(currentFileNames[currentFileCount], filename);
+	printf("Added file isss7 %s\n", filename);
+	currentFileCount++;
 
 	if ((fclose(fp)))
 	{
