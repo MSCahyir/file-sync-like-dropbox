@@ -33,6 +33,7 @@ void get_file(int sock, char *directory, char *file, int size, long int timestam
 void updateStoredFileNames(char *fileNames[], int *fileCount, const char *directory);
 bool fileExists(const char *fileName, const char *dirPath);
 void handle_signal(int sg);
+void send_directory(char *dir_path);
 
 /* Connect to a server given by a hostname '-h' with username 'u' and directory
  * '-d'. Synchronize files both ways with the server. Retrieve any new files on the
@@ -377,6 +378,101 @@ void sync_files(char *directory)
 					file_count++;
 					printf("File count = %d\n", file_count);
 				}
+
+				else if (S_ISDIR(st.st_mode))
+				{
+					int file_exists_write = 0;
+
+					// If any new file is added.
+					for (i = 0; i < currentFileCount; i++)
+					{
+
+						if (strcmp(file->d_name, currentFileNames[i]) == 0)
+						{
+							file_exists_write = 1;
+							break;
+						}
+					}
+
+					// Add new file to current file array
+					if (!file_exists_write)
+					{
+						currentFileNames[currentFileCount] = malloc(strlen(file->d_name) + 1);
+						strcpy(currentFileNames[currentFileCount], file->d_name);
+						printf("Added file isss %s\n", currentFileNames[currentFileCount]);
+						currentFileCount++;
+					}
+
+					// Prepare the respective sync packet to be sent.
+					strncpy(sync_packet.filename, file->d_name, MAXNAME);
+					sync_packet.mtime = (long int)st.st_mtime;
+					sync_packet.size = (int)st.st_size;
+
+					// Write the sync packet to the server.
+					Writen(soc, &sync_packet, packet_size);
+
+					// Read the server's resposne to the sent sync packet.
+					if ((n = Readn(soc, &server_sync_packet, packet_size)) != packet_size)
+					{
+						fprintf(stderr, "Communitation mismatch: Server did not acknowledge sync packet.\n");
+						Close(soc);
+						exit(1);
+					}
+
+					// printf("Client time = %ld\n", sync_packet.mtime);
+					// printf("Server time = %ld\n", server_sync_packet.mtime);
+					if (server_sync_packet.mtime == -1)
+					{
+						// Grab the full path to the file.
+						strncpy(fullpath, directory, CHUNKSIZE);
+						strcat(fullpath, "/");
+						strncat(fullpath, server_sync_packet.filename, CHUNKSIZE - strlen(fullpath));
+
+						// Delete the file
+						int result = remove(fullpath);
+
+						if (result == 0)
+						{
+							printf("File deleted successfully.\n");
+						}
+						else
+						{
+							perror("File deletion failed.\n");
+						}
+						for (int i = 0; i < currentFileCount; i++)
+						{
+							if (strcmp(server_sync_packet.filename, currentFileNames[i]) == 0)
+							{
+								printf("Removed from current arr success.\n");
+								// Update the current array with delete in array
+								free(currentFileNames[i]);
+								currentFileNames[i] = NULL;
+								for (int j = i; j < currentFileCount - 1; j++)
+								{
+									currentFileNames[j] = currentFileNames[j + 1];
+								}
+								currentFileCount--;
+							}
+						}
+						rewinddir(dir);
+					}
+					// Determine if this file has to be sycned either way.
+					else if (server_sync_packet.mtime < sync_packet.mtime)
+					{ // Client has a newer version.
+						printf("TX: Sending file: %s\n", file->d_name);
+						send_file(directory, sync_packet.filename);
+						printf("\tTX: Complete.\n");
+					}
+					else if (server_sync_packet.mtime > sync_packet.mtime)
+					{ // Server has a more recent version.
+						printf("TX: Get file: %s\n", file->d_name);
+						get_file(soc, directory, server_sync_packet.filename, server_sync_packet.size, server_sync_packet.mtime);
+						printf("\tTX complete: Updating file %s.\n", server_sync_packet.filename);
+					}
+
+					file_count++;
+					printf("File count = %d\n", file_count);
+				}
 			}
 		}
 
@@ -468,6 +564,7 @@ void retrieve_new_files(char *directory)
  */
 void send_file(char *directory, char *file)
 {
+	printf("Send Burada\n");
 	FILE *fp;
 	char fullpath[CHUNKSIZE];
 	char buffer[CHUNKSIZE];
@@ -504,6 +601,40 @@ void send_file(char *directory, char *file)
 		perror("fclose: ");
 		exit(1);
 	}
+}
+
+void send_directory(char *dir_path)
+{
+	DIR *dir = opendir(dir_path);
+	if (dir == NULL)
+	{
+		printf("Directory not found: %s\n", dir_path);
+		return;
+	}
+
+	struct dirent *entry;
+	char file_path[CHUNKSIZE];
+
+	while ((entry = readdir(dir)) != NULL)
+	{
+		if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+		{
+			sprintf(file_path, "%s/%s", dir_path, entry->d_name);
+
+			if (entry->d_type == DT_DIR)
+			{
+				// Recursively send subfolder
+				send_directory(file_path);
+			}
+			else
+			{
+				// Send file
+				send_file(dir_path, file_path);
+			}
+		}
+	}
+
+	closedir(dir);
 }
 
 /* Retrieve a file 'file' of size 'size' by reading the contents of it from the
@@ -551,6 +682,7 @@ void get_file(int sock, char *directory, char *file, int size, long int timestam
 
 	while (readcount < size)
 	{
+		// printf("read count = %d. file size = %d\n", readcount, size);
 
 		/* Compute the reamining length to be read. If the reamining length happens
 		 * to be more than CHUNKSIZE (256) then read only CHUNKSIZE at max for now

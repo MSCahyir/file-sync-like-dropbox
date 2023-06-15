@@ -32,7 +32,7 @@ int send_new_file(int sock, struct client_info *client);
 void check_sharing(struct client_info *client, int client_slot);
 void add_shared(struct client_info *client, char *filename);
 void refresh_file_times(struct client_info *client);
-void get_file(int sock, struct client_info *client, char *buffer, int length);
+void get_file(int sock, struct client_info *client, char *buffer, int length, int clientSlotId);
 void send_file(int sock, char *directory, char *filename);
 void cleanFileInArray(struct client_info *client, int index);
 
@@ -91,8 +91,6 @@ void *startConsThread(void *arg)
 
 	// Bu değerleri giriş çıkışta kontrol lazım
 
-	int get_read_size;
-
 	char buffer[CHUNKSIZE];
 	char path[CHUNKSIZE];
 
@@ -143,6 +141,7 @@ void *startConsThread(void *arg)
 
 	while (1)
 	{
+		printf("while içinde \n");
 		// struct client_info *args = (struct client_info *)arg;
 
 		if ((sockfd = clients[client_slot].sock) < 0) // Not active.
@@ -163,7 +162,6 @@ void *startConsThread(void *arg)
 				 */
 				// pthread_mutex_lock(&client_mutex);
 				refresh_file_times(&clients[client_slot]);
-				// process_client_request(sockfd, &clients[client_slot], received_packet, &readfds);
 
 				// Once refreshed, do not do so until a cycle is complete.
 				clients[client_slot].refresh = 0;
@@ -188,32 +186,112 @@ void *startConsThread(void *arg)
 		}
 		else if (clients[client_slot].state == GETFILE)
 		{
-			// This client has an ongoing GETFILE transaction.
+			int length;
+			int n;
+			// printf("Get Burada\n");
+			FILE *fp;
+			char fullpath[CHUNKSIZE];
 
-			/* red_read_size determines how many bytes to read from the socket, read at most
-			 * CHUNKSIZE bytes.
-			 */
-			// pthread_mutex_lock(&client_mutex);
-			if ((get_read_size = clients[client_slot].get_filename_size - clients[client_slot].get_filename_readcount) > CHUNKSIZE)
+			// Grab the full path to this file on the server.
+			strncpy(fullpath, SERVERFILES, 14);
+			strncat(fullpath, clients[client_slot].get_filename, CHUNKSIZE - strlen(fullpath));
+
+			if (clients[client_slot].get_filename_readcount)
 			{
-				get_read_size = CHUNKSIZE;
-			}
-
-			if ((n = Readn(sockfd, &buffer, get_read_size)) <= 0)
-			{
-				// printf("Buraya geldi3\n");
-				// Client closed connection.
-				close_connection(sockfd, &clients[client_slot], &readfds);
-
-				break;
+				if ((fp = fopen(fullpath, "a")) == NULL)
+				{
+					perror("fopen on get file: ");
+					exit(1);
+				}
 			}
 			else
 			{
-				// printf("Buraya geldi4\n");
-				// Write the file out on the server's file system.
-				get_file(sockfd, &clients[client_slot], buffer, n);
+				if ((fp = fopen(fullpath, "w")) == NULL)
+				{
+					perror("fopen on get file: ");
+					exit(1);
+				}
 			}
-			// pthread_mutex_unlock(&client_mutex);
+			// printf("Buraya geldi1\n");
+			if ((length = clients[client_slot].get_filename_size) > CHUNKSIZE)
+			{
+				length = CHUNKSIZE;
+			}
+
+			// printf("read count = %d. file size = %d\n", clients[client_slot].get_filename_readcount, clients[client_slot].get_filename_size);
+			while (clients[client_slot].get_filename_readcount < clients[client_slot].get_filename_size)
+			{
+				// printf("buraya giriyor1\n");
+				length = clients[client_slot].get_filename_size - clients[client_slot].get_filename_readcount;
+				// printf("buraya giriyor2\n");
+
+				if (length > CHUNKSIZE)
+				{
+					length = CHUNKSIZE;
+				}
+				// printf("buraya giriyor3\n");
+				//  printf("Buraya geldi3\n");
+				if ((n = Readn(sockfd, &buffer, length)) <= 0)
+				{
+					// printf("Buraya geldi3\n");
+					// Client closed connection.
+
+					close_connection(sockfd, &clients[client_slot], &readfds);
+
+					// break;
+				}
+				// printf("buraya giriyor4\n");
+
+				// Write the contents present in 'buffer' of length 'length' to the file.
+				clients[client_slot].get_filename_readcount += n;
+				// printf("read count = %d. file count = %d\n", clients[client_slot].get_filename_readcount, clients[client_slot].get_filename_size);
+
+				fwrite(buffer, length, 1, fp);
+				// printf("Buraya geldi1\n");
+				//  If there was an error with fwrite.
+				if (ferror(fp))
+				{
+					fprintf(stderr, "A write error occured.\n");
+					Close(sockfd);
+					exit(1);
+				}
+			}
+
+			/* Check if all bytes have been recieved and written to the file. If so,
+			 * change this client's state to SYNC state.
+			 */
+			// printf("read count = %d. file count = %d\n", clients[client_slot].get_filename_readcount, clients[client_slot].get_filename_size);
+			if (clients[client_slot].get_filename_readcount == clients[client_slot].get_filename_size)
+			{
+				printf("\t\tCOMPLETE TX: %s into directory: %s, from user: %s\n", clients[client_slot].get_filename, clients[client_slot].dirname, clients[client_slot].userid);
+				clients[client_slot].state = SYNC;
+				clients[client_slot].fileLength++;
+			}
+
+			if ((fclose(fp)))
+			{
+				perror("fclose: ");
+				exit(1);
+			}
+
+			struct stat sbuf;
+			struct utimbuf new_times;
+
+			if (stat(fullpath, &sbuf) != 0)
+			{
+				perror("stat");
+				exit(1);
+			}
+
+			// Update the last modified time to 'timestamp' for this file on the filesystem.
+			new_times.actime = sbuf.st_atime; // Access time.
+			new_times.modtime = (time_t)clients[client_slot].get_filename_timestamp;
+
+			if (utime(fullpath, &new_times) < 0)
+			{
+				perror("utime");
+				exit(1);
+			}
 		}
 	}
 
@@ -329,7 +407,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 	struct sync_message response_packet;
 	int response_packet_size = sizeof(response_packet);
 	char fullpath[CHUNKSIZE];
-
+	printf("Burada1");
 	if (strlen(received_packet.filename) == 0)
 	{
 		// Checking for empty files.
@@ -342,6 +420,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 
 		if (client->sharing)
 		{
+			printf("Burada2");
 			/* If directory is being shared, check if this filename
 			 * already exists on the server's file system. If so, update
 			 * this client's file_info array with the information of the file
@@ -484,36 +563,10 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 				}
 				else
 				{
-					// if (currentFileCount == 0)
-					// {
-					// 	currentFileNames[currentFileCount] = malloc(strlen(received_packet.filename) + 1);
-					// 	strcpy(currentFileNames[currentFileCount], received_packet.filename);
-					// 	printf("Added file isss1 %s\n", currentFileNames[currentFileCount]);
-					// 	currentFileCount++;
-					// }
-					// else
-					// {
-					// 	int file_exits = 0;
-					// 	for (int i = 0; i < currentFileCount; i++)
-					// 	{
-					// 		if (strcmp(received_packet.filename, currentFileNames[i]) == 0)
-					// 		{
-					// 			file_exits = 1;
-					// 			break;
-					// 		}
-					// 	}
-
-					// 	if (!file_exits)
-					// 	{
-					// 		currentFileNames[currentFileCount] = malloc(strlen(received_packet.filename) + 1);
-					// 		strcpy(currentFileNames[currentFileCount], received_packet.filename);
-					// 		printf("Added file isss2 %s\n", received_packet.filename);
-					// 		currentFileCount++;
-					// 	}
-					// }
-
 					if (received_packet.mtime > response_packet.mtime)
 					{
+						printf("Burada3");
+						printf("Buraya da giriyor");
 						// Client has a more recent file.
 						client->state = GETFILE;
 
@@ -889,11 +942,15 @@ void refresh_file_times(struct client_info *client)
  * @Param: length the length of the data in the buffer.
  * @Return: void.
  */
-void get_file(int sock, struct client_info *client, char *buffer, int length)
+void get_file(int sock, struct client_info *client, char *buffer, int length, int clientSlotId)
 {
-
+	int get_read_size;
+	int newLength;
+	int n;
+	printf("Get Burada\n");
 	FILE *fp;
 	char fullpath[CHUNKSIZE];
+	char newBuffer[CHUNKSIZE];
 
 	// Grab the full path to this file on the server.
 	strncpy(fullpath, SERVERFILES, 14);
@@ -921,20 +978,48 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 			exit(1);
 		}
 	}
-
-	// Write the contents present in 'buffer' of length 'length' to the file.
-	fwrite(buffer, length, 1, fp);
-
-	// If there was an error with fwrite.
-	if (ferror(fp))
+	// printf("Buraya geldi1\n");
+	if ((get_read_size = clients[clientSlotId].get_filename_size - clients[clientSlotId].get_filename_readcount) > CHUNKSIZE)
 	{
-		fprintf(stderr, "A write error occured.\n");
-		Close(sock);
-		exit(1);
+		get_read_size = CHUNKSIZE;
+	}
+	// printf("Buraya geldi2\n");
+	while (client->get_filename_readcount < (clients[clientSlotId].get_filename_size - clients[clientSlotId].get_filename_readcount))
+	{
+		newLength = (clients[clientSlotId].get_filename_size - clients[clientSlotId].get_filename_readcount) - client->get_filename_readcount;
+
+		if (newLength > CHUNKSIZE)
+		{
+			newLength = CHUNKSIZE;
+		}
+		// printf("Buraya geldi3\n");
+		if ((n = Readn(sock, &newBuffer, get_read_size)) <= 0)
+		{
+			// printf("Buraya geldi3\n");
+			// Client closed connection.
+
+			// BURAYA BI BAK
+			// close_connection(sock, &clients[clientSlotId], &readfds);
+
+			// break;
+		}
+
+		// Write the contents present in 'buffer' of length 'length' to the file.
+		client->get_filename_readcount += n;
+
+		fwrite(newBuffer, newLength, 1, fp);
+		// printf("Buraya geldi1\n");
+		//  If there was an error with fwrite.
+		if (ferror(fp))
+		{
+			fprintf(stderr, "A write error occured.\n");
+			Close(sock);
+			exit(1);
+		}
 	}
 
 	// Update how many bytes have been read for this particular file.
-	client->get_filename_readcount += length;
+	client->get_filename_readcount += newLength;
 
 	/* Check if all bytes have been recieved and written to the file. If so,
 	 * change this client's state to SYNC state.
@@ -971,11 +1056,11 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 		exit(1);
 	}
 
-	printf("All files after get file\n\n");
-	for (int i = 0; i < client->fileLength; i++)
-	{
-		printf("File number = 1 %d. File name = %s\n", i, client->files[i].filename);
-	}
+	// printf("All files after get file\n\n");
+	// for (int i = 0; i < client->fileLength; i++)
+	// {
+	// 	printf("File number = 1 %d. File name = %s\n", i, client->files[i].filename);
+	// }
 }
 
 /* Send a file 'filename' present in the directory 'directory' (at the
@@ -989,7 +1074,7 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
  */
 void send_file(int sock, char *directory, char *filename)
 {
-
+	printf("Send Burada\n");
 	FILE *fp;
 	char fullpath[CHUNKSIZE];
 	char buffer[CHUNKSIZE];
