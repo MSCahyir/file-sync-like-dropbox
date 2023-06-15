@@ -4,7 +4,7 @@
 #define LISTENQ 5
 
 // Sleep time for the client.
-#define WAITTIME 2
+#define WAITTIME 5
 
 #define MAXNAME 64
 #define MAXCLIENTS 10

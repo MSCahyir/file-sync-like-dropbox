@@ -4,8 +4,8 @@
 #include <sys/types.h>
 #include <errno.h>
 
-ssize_t /* Read "n" bytes from a descriptor. */
-readn(int fd, void *vptr, size_t n)
+/* Read "n" bytes from a descriptor. */
+ssize_t readn(int fd, void *vptr, size_t n)
 {
     size_t nleft;
     ssize_t nread;
@@ -31,8 +31,7 @@ readn(int fd, void *vptr, size_t n)
     return (n - nleft); /* return >= 0 */
 }
 
-ssize_t
-Readn(int fd, void *ptr, size_t nbytes)
+ssize_t Readn(int fd, void *ptr, size_t nbytes)
 {
     ssize_t n;
 

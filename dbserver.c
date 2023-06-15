@@ -13,6 +13,7 @@
 #include "helpers/filedata.h"
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 /* Wrapper signatures */
 
@@ -28,12 +29,12 @@ ssize_t Readn(int fd, void *ptr, size_t nbytes);
 void close_connection(int sock, struct client_info *client, fd_set *allset);
 void process_client_request(int sock, struct client_info *client, struct sync_message received_packet, fd_set *allset);
 int send_new_file(int sock, struct client_info *client);
-int delete_file(int sock, struct client_info *client);
 void check_sharing(struct client_info *client, int client_slot);
 void add_shared(struct client_info *client, char *filename);
 void refresh_file_times(struct client_info *client);
 void get_file(int sock, struct client_info *client, char *buffer, int length);
 void send_file(int sock, char *directory, char *filename);
+void cleanFileInArray(struct client_info *client, int index);
 
 /* Set up the server socket. Create and bind a socket such that it listents
  * for incoming connections on this socket. Return the socket.
@@ -67,8 +68,6 @@ int set_up()
 	return listenfd;
 }
 
-char *currentFileNames[MAXFILES]; // Array to store file names
-int currentFileCount = 0;
 int client_count = 0;
 pthread_mutex_t client_mutex;
 
@@ -334,7 +333,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 	if (strlen(received_packet.filename) == 0)
 	{
 		// Checking for empty files.
-		delete_file(sock, client);
+		send_new_file(sock, client);
 		client->state = SYNC;
 	}
 	else
@@ -359,22 +358,52 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 		}
 		else
 		{
+			printf("Buraya giriyorrr1\n");
 			struct dirent *entry;
-
-			// Dosya currentlerde var ama dir içinde yok yani server klasöründen silinmiş
-			for (i = 0; i < currentFileCount; i++)
+			struct stat fileStat;
+			// Dosya currentlerde var ama dir içinde yok yani server klasöründen silinmiş mi diye kontrol et
+			for (i = 0; i < client->fileLength; i++)
 			{
+				file_exists = 0;
+
 				if ((dir = opendir(dirpath)) == NULL)
 				{
 					perror("Opening directory: ");
 					exit(1);
 				}
 
-				file_exists = 0;
-
 				while ((entry = readdir(dir)) != NULL)
 				{
-					if (strcmp(entry->d_name, currentFileNames[i]) == 0)
+					// printf("Dir okuyor\n");
+					strncpy(fullpath, dirpath, CHUNKSIZE);
+					strncat(fullpath, client->files[i].filename, CHUNKSIZE - strlen(client->files[i].filename));
+					// printf("Full path = %s ---- Client File = %s\n", fullpath, client->files[i].filename);
+
+					struct stat fileStat;
+					if (stat(fullpath, &fileStat) != 0)
+					{
+						if (errno == ENOENT)
+						{
+							printf("Buraya geldi\n");
+							break;
+						}
+						else
+						{
+							printf("An error occurred while accessing the file.\n");
+						}
+						perror("stat");
+						exit(1);
+					}
+
+					if (S_ISREG(fileStat.st_mode))
+					{
+						if (strcmp(entry->d_name, client->files[i].filename) == 0)
+						{
+							file_exists = 1;
+							break;
+						}
+					}
+					else
 					{
 						file_exists = 1;
 						break;
@@ -383,25 +412,24 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 
 				if (!file_exists)
 				{
-					printf("Deleted File isssss1 %s\n", currentFileNames[i]);
+					printf("Deleted File isssss1 %s\n", client->files[i].filename);
 					break;
 				}
 				closedir(dir);
 			}
 
+			// Dosya server files içinden silinmiş client arrays içinden de temizle
 			if (!file_exists)
 			{
 				// Grab the full path to the file.
 				strncpy(fullpath, dirpath, CHUNKSIZE);
-				// // Bura kalkacak
-				// strcat(fullpath, "/");
-				strncat(fullpath, currentFileNames[i], CHUNKSIZE - strlen(currentFileNames[i]));
+				strncat(fullpath, client->files[i].filename, CHUNKSIZE - strlen(client->files[i].filename));
 				printf("Full path = %s\n", fullpath);
 
 				// The file 'file-d_name' at this iteration needs to be sent to the client.
 
 				// Generate and send the approriate sync_message with the file information.
-				strncpy(response_packet.filename, currentFileNames[i], MAXNAME);
+				strncpy(response_packet.filename, client->files[i].filename, MAXNAME);
 				response_packet.mtime = -1;
 				response_packet.size = -1;
 
@@ -412,23 +440,8 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 				 * they will be found out and successively sent at the next empty sync_messages the client
 				 * sends.
 				 */
-				printf("\tDELETEDFILE TX: %s deleted from server folder sending to client %s; sending. \n", currentFileNames[i], client->userid);
-
-				printf("current file count = %d", currentFileCount);
-				free(currentFileNames[i]);
-				currentFileNames[i] = NULL;
-
-				// Update the current array with deletion in the array
-				if (i < currentFileCount)
-				{
-					free(currentFileNames[i]); // Free memory for the last element (moved to the previous index)
-					for (int j = i; j < currentFileCount - 1; j++)
-					{
-						currentFileNames[j] = currentFileNames[j + 1];
-					}
-					currentFileCount--;
-				}
-
+				printf("\tDELETEDFILE TX: %s deleted from server folder sending to client %s; sending. \n", client->files[i].filename, client->userid);
+				cleanFileInArray(client, i);
 				printf("\t\tDELETEDFILE TX: Complete.\n");
 
 				// Update the current array with delete in array
@@ -442,13 +455,10 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 
 				Writen(sock, &response_packet, response_packet_size);
 
-				// If a file is deleted from client side.
+				// Client tarafından dosya sildim diye mesaj geldi (Client dosyaları arasında silimiş)
 				if (received_packet.mtime == -1)
 				{
 					strncpy(fullpath, SERVERFILES, 14);
-					// // Bura kalkacak
-					// strncat(fullpath, client->dirname, CHUNKSIZE - 14);
-					// strncat(fullpath, "/", CHUNKSIZE - sizeof(client->dirname) - 14);
 					strncat(fullpath, received_packet.filename, CHUNKSIZE - 14);
 
 					// Delete the file
@@ -462,19 +472,13 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 					{
 						perror("File deletion failed.\n");
 					}
-					for (int i = 0; i < currentFileCount; i++)
+					for (int i = 0; i < client->fileLength; i++)
 					{
-						if (strcmp(received_packet.filename, currentFileNames[i]) == 0)
+						if (strcmp(received_packet.filename, client->files[i].filename) == 0)
 						{
 							printf("Removed from current arr success.\n");
 							// Update the current array with delete in array
-							free(currentFileNames[i]);
-							currentFileNames[i] = NULL;
-							for (int j = i; j < currentFileCount - 1; j++)
-							{
-								currentFileNames[j] = currentFileNames[j + 1];
-							}
-							currentFileCount--;
+							cleanFileInArray(client, i);
 						}
 					}
 				}
@@ -586,9 +590,7 @@ int send_new_file(int sock, struct client_info *client)
 		 */
 		found = 1;
 
-		// // Bura kalkacak
 		strncpy(fullpath, dirpath, 256);
-		// strcat(fullpath, "/");
 		strncat(fullpath, file->d_name, CHUNKSIZE - strlen(fullpath)); // error?
 		if (stat(fullpath, &st) != 0)
 		{
@@ -622,10 +624,6 @@ int send_new_file(int sock, struct client_info *client)
 
 			if (found)
 			{
-				currentFileNames[currentFileCount] = malloc(strlen(file->d_name) + 1);
-				strcpy(currentFileNames[currentFileCount], file->d_name);
-				printf("Added file isss3 %s\n", file->d_name);
-				currentFileCount++;
 				// The file 'file-d_name' at this iteration needs to be sent to the client.
 
 				// Generate and send the approriate sync_message with the file information.
@@ -647,199 +645,19 @@ int send_new_file(int sock, struct client_info *client)
 				 */
 				printf("\tNEWFILE TX: %s does not exist on client %s; sending. \n", file->d_name, client->userid);
 				send_file(sock, client->dirname, file->d_name);
+				client->fileLength++;
 				printf("\t\tNEWFILE TX: Complete.\n");
+
+				printf("All files after send file\n\n");
+				for (int i = 0; i < client->fileLength; i++)
+				{
+					printf("File number = %d. File name = %s\n", i, client->files[i].filename);
+				}
+
 				return 1;
 			}
 		}
 	}
-
-	/* If this scope is reached by the function, it indicates that there are no
-	 * more new files left to be sent (since any new file would have 'returned').
-	 * If so, generate and send an empty sync_message to the client to notify
-	 * the client that no more new files exist.
-	 */
-	strncpy(response_packet.filename, "", MAXNAME);
-	response_packet.mtime = 0;
-	response_packet.size = 0;
-
-	Writen(sock, &response_packet, packet_size);
-
-	/* This also indicates an end of a cycle (see README) for this client.
-	 * At the next request the client makes, refresh the modified times
-	 * of ever file in the client's file_info array that have been modified
-	 * on the server's file_system.
-	 */
-	client->refresh = 1;
-
-	if (closedir(dir) == -1)
-	{
-		perror("Closing directory: ");
-		exit(1);
-	}
-	return 0;
-}
-
-int delete_file(int sock, struct client_info *client)
-{
-	char dirpath[CHUNKSIZE];
-	char fullpath[CHUNKSIZE];
-	DIR *dir;
-	struct dirent *file;
-	struct stat st;
-	int j, found;
-	struct sync_message response_packet;
-	int packet_size = sizeof(response_packet);
-	struct file_info *current_file;
-
-	// Get the relative path to this client's directory.
-	strncpy(dirpath, SERVERFILES, 14);
-	// // Bura kalkacak
-	// strncat(dirpath, client->dirname, CHUNKSIZE - 14);
-	if ((dir = opendir(dirpath)) == NULL)
-	{
-		perror("Opening directory: ");
-		exit(1);
-	}
-
-	while (((file = readdir(dir)) != NULL))
-	{
-		/* This flag determines if the current file in this loop is new and
-		 * has to be sent to the client.
-		 */
-		found = 1;
-
-		// // Bura kalkacak
-		strncpy(fullpath, dirpath, 256);
-		// strcat(fullpath, "/");
-		strncat(fullpath, file->d_name, CHUNKSIZE - strlen(fullpath)); // error?
-		if (stat(fullpath, &st) != 0)
-		{
-			perror("stat");
-			exit(1);
-		}
-
-		// Check if a regular file (Skip dot files and subdirectories).
-		if (S_ISREG(st.st_mode))
-		{
-			for (j = 0; j < MAXFILES; j++)
-			{
-
-				if (client->files[j].filename[0] == '\0')
-				{
-					/* No more files left in the client to check, break out to improve run-time.
-					 * It is trivially new for the client in this case, hence send it.
-					 */
-					found = 1;
-					break;
-				}
-
-				if (strcmp(client->files[j].filename, file->d_name) == 0)
-				{
-					// Found some file which exists already exists, skip.
-					found = 0;
-					break;
-				}
-			}
-
-			if (found)
-			{
-				currentFileNames[currentFileCount] = malloc(strlen(file->d_name) + 1);
-				strcpy(currentFileNames[currentFileCount], file->d_name);
-				printf("Added file isss4 %s\n", currentFileNames[currentFileCount]);
-				currentFileCount++;
-				// The file 'file-d_name' at this iteration needs to be sent to the client.
-
-				// Generate and send the approriate sync_message with the file information.
-				strncpy(response_packet.filename, file->d_name, MAXNAME);
-				response_packet.mtime = (long int)st.st_mtime;
-				response_packet.size = (int)st.st_size;
-
-				Writen(sock, &response_packet, packet_size);
-
-				// Add the associated modified time, size and the filename itself to the client.
-				current_file = check_file(client->files, file->d_name);
-				current_file->mtime = (time_t)st.st_mtime;
-				current_file->size = (int)st.st_size;
-
-				/* Send the file to the client. Once the file is sent the functions returns an arbitary
-				 * value; since at most only one new file can be transferred. If there were more new files
-				 * they will be found out and successively sent at the next empty sync_messages the client
-				 * sends.
-				 */
-				printf("\tNEWFILE TX: %s does not exist on client %s; sending. \n", file->d_name, client->userid);
-				send_file(sock, client->dirname, file->d_name);
-				printf("\t\tNEWFILE TX: Complete.\n");
-				return 1;
-			}
-		}
-	}
-
-	// int file_exists = 0;
-
-	// for (int i = 0; i < currentFileCount; i++)
-	// {
-	// 	if ((dir = opendir(dirpath)) == NULL)
-	// 	{
-	// 		perror("Opening directory: ");
-	// 		exit(1);
-	// 	}
-
-	// 	file_exists = 0;
-
-	// 	while ((file = readdir(dir)) != NULL)
-	// 	{
-	// 		if (strcmp(file->d_name, currentFileNames[i]) == 0)
-	// 		{
-	// 			file_exists = 1;
-	// 			break;
-	// 		}
-	// 	}
-
-	// 	if (!file_exists)
-	// 	{
-	// 		printf("Deleted File isssss %s\n", currentFileNames[i]);
-	// 		break;
-	// 	}
-	// }
-
-	// closedir(dir);
-
-	// if (!file_exists)
-	// {
-	// 	// Generate and send the approriate sync_message with the file information.
-	// 	strncpy(response_packet.filename, file->d_name, MAXNAME);
-	// 	response_packet.mtime = -1;
-	// 	response_packet.size = -1;
-
-	// 	Writen(sock, &response_packet, packet_size);
-
-	// 	/* Send the file to the client. Once the file is sent the functions returns an arbitary
-	// 	 * value; since at most only one new file can be transferred. If there were more new files
-	// 	 * they will be found out and successively sent at the next empty sync_messages the client
-	// 	 * sends.
-	// 	 */
-	// 	printf("\tDELETEDFILE TX: %s does not exist on client %s; sending. \n", file->d_name, client->userid);
-	// 	printf("\t\tDELETEDFILE TX: Complete.\n");
-
-	// 	int m;
-	// 	for (m = 0; m < currentFileCount; m++)
-	// 	{
-	// 		if (strcmp(file->d_name, currentFileNames[m]) == 0)
-	// 		{
-	// 			free(currentFileNames[m]);
-	// 			currentFileNames[m] = NULL;
-	// 			break;
-	// 		}
-	// 	}
-
-	// 	// Update the current array with delete in array
-
-	// 	for (int s = m; j < currentFileCount - 1; s++)
-	// 	{
-	// 		currentFileNames[s] = currentFileNames[s + 1];
-	// 	}
-	// 	currentFileCount--;
-	// }
 
 	/* If this scope is reached by the function, it indicates that there are no
 	 * more new files left to be sent (since any new file would have 'returned').
@@ -1048,7 +866,6 @@ void refresh_file_times(struct client_info *client)
 				}
 			}
 
-			// Bura kalkacak
 			if (closedir(dir) == -1)
 			{
 				perror("Closing directory: ");
@@ -1080,9 +897,6 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 
 	// Grab the full path to this file on the server.
 	strncpy(fullpath, SERVERFILES, 14);
-	// // Bura kalkacak
-	// strncat(fullpath, client->dirname, CHUNKSIZE - 14);
-	// strcat(fullpath, "/");
 	strncat(fullpath, client->get_filename, CHUNKSIZE - strlen(fullpath));
 
 	/* If 'read_count' for this file is not 0, then the server has already wrote
@@ -1129,12 +943,8 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 	{
 		printf("\t\tCOMPLETE TX: %s into directory: %s, from user: %s\n", client->get_filename, client->dirname, client->userid);
 		client->state = SYNC;
+		client->fileLength++;
 	}
-
-	currentFileNames[currentFileCount] = malloc(strlen(client->get_filename) + 1);
-	strcpy(currentFileNames[currentFileCount], client->get_filename);
-	printf("Added file isss6 %s\n", client->get_filename);
-	currentFileCount++;
 
 	if ((fclose(fp)))
 	{
@@ -1160,6 +970,12 @@ void get_file(int sock, struct client_info *client, char *buffer, int length)
 		perror("utime");
 		exit(1);
 	}
+
+	printf("All files after get file\n\n");
+	for (int i = 0; i < client->fileLength; i++)
+	{
+		printf("File number = 1 %d. File name = %s\n", i, client->files[i].filename);
+	}
 }
 
 /* Send a file 'filename' present in the directory 'directory' (at the
@@ -1182,9 +998,6 @@ void send_file(int sock, char *directory, char *filename)
 
 	// Grab the full path to the file on the server.
 	strncpy(fullpath, SERVERFILES, 14);
-	// // Bura kalkacak
-	// strncat(fullpath, directory, CHUNKSIZE - 14);
-	// strcat(fullpath, "/");
 	strncat(fullpath, filename, CHUNKSIZE - strlen(fullpath));
 
 	if ((fp = fopen(fullpath, "r")) == NULL)
@@ -1206,11 +1019,6 @@ void send_file(int sock, char *directory, char *filename)
 		// Write the 'i' bytes read from the file to the socket 'soc'.
 		Writen(sock, &buffer, i);
 	}
-
-	currentFileNames[currentFileCount] = malloc(strlen(filename) + 1);
-	strcpy(currentFileNames[currentFileCount], filename);
-	printf("Added file isss7 %s\n", filename);
-	currentFileCount++;
 
 	if ((fclose(fp)))
 	{
@@ -1238,4 +1046,30 @@ void close_connection(int sock, struct client_info *client, fd_set *allset)
 	client->state = DEADCLIENT;
 
 	printf("DEAD CLIENT: Closed connection on user: %s\n", client->userid);
+}
+
+/* For Clean the Clients[index].files struct
+ */
+void cleanFileInArray(struct client_info *client, int index)
+{
+	if (index < 0 || index >= client->fileLength)
+	{
+		printf("Invalid index!\n");
+		return;
+	}
+
+	// Shift elements to fill the gap
+	for (int i = index; i < client->fileLength - 1; i++)
+	{
+		client->files[i] = client->files[i + 1];
+	}
+	client->files[client->fileLength - 1].filename[0] = '\0';
+
+	client->fileLength--;
+
+	printf("All files after clean file\n\n");
+	for (int i = 0; i < client->fileLength + 10; i++)
+	{
+		printf("File number = %d. File name = %s\n", i, client->files[i].filename);
+	}
 }

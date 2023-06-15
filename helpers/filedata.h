@@ -15,6 +15,7 @@ struct client_info
 	char dirname[MAXNAME];
 	struct file_info files[MAXFILES];
 	int state;
+	int fileLength;
 
 	int refresh; // Flag - whether to refresh the last modified times in the file_info array.
 	int sharing; // Flag - if the drectory is being shared.
