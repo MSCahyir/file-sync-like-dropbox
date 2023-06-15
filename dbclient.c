@@ -317,8 +317,8 @@ void sync_files(char *directory, int soc)
 						exit(1);
 					}
 
-					printf("Client time = %ld\n", sync_packet.mtime);
-					printf("Server time = %ld\n", server_sync_packet.mtime);
+					// printf("Client time = %ld\n", sync_packet.mtime);
+					// printf("Server time = %ld\n", server_sync_packet.mtime);
 					if (server_sync_packet.mtime == -1)
 					{
 						// Grab the full path to the file.

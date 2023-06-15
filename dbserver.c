@@ -426,7 +426,7 @@ void process_client_request(int sock, struct client_info *client, struct sync_me
 	if (strlen(received_packet.filename) == 0)
 	{
 		// Checking for empty files.
-		send_new_file(sock, client);
+		delete_file(sock, client);
 		client->state = SYNC;
 	}
 	else
@@ -806,12 +806,11 @@ int delete_file(int sock, struct client_info *client)
 		if (S_ISREG(st.st_mode))
 		{
 
-			for (j = 0; j < MAXFILES; j++)
+			for (int k = 0; k < MAXFILES; k++)
 			{
-				if (strcmp(client->files[j].filename, file->d_name) == 0)
+				if (strcmp(client->files[k].filename, file->d_name) == 0)
 				{
 					file_exists = 1;
-					break;
 				}
 
 				if (!file_exists)
@@ -819,6 +818,9 @@ int delete_file(int sock, struct client_info *client)
 					printf("Deleted File isssss %s\n", file->d_name);
 					break;
 				}
+			}
+			for (j = 0; j < MAXFILES; j++)
+			{
 
 				if (client->files[j].filename[0] == '\0')
 				{
@@ -867,9 +869,9 @@ int delete_file(int sock, struct client_info *client)
 
 				// Update the current array with delete in array
 
-				for (int j = m; j < currentFileCount - 1; j++)
+				for (int s = m; j < currentFileCount - 1; s++)
 				{
-					currentFileNames[j] = currentFileNames[j + 1];
+					currentFileNames[s] = currentFileNames[s + 1];
 				}
 				currentFileCount--;
 			}
